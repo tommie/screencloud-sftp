@@ -1,4 +1,4 @@
-import os.path, socket, sys, time
+import contextlib, os.path, socket, sys, time
 
 import ScreenCloud
 
@@ -9,11 +9,13 @@ if not hasattr(QDesktopServices, 'storageLocation'):
 	from PythonQt.QtCore import QStandardPaths
 from PythonQt.QtUiTools import QUiLoader
 import ssh2
+from ssh2.exceptions import SFTPError, SSH2Error
 from ssh2.session import Session
 from ssh2.sftp import LIBSSH2_FXF_CREAT, LIBSSH2_FXF_WRITE, \
-					  LIBSSH2_SFTP_S_IRUSR, LIBSSH2_SFTP_S_IRGRP, \
-					  LIBSSH2_SFTP_S_IWUSR, LIBSSH2_SFTP_S_IROTH, \
-					  LIBSSH2_SFTP_S_IXUSR
+					 LIBSSH2_SFTP_S_IRUSR, LIBSSH2_SFTP_S_IRGRP, \
+					 LIBSSH2_SFTP_S_IWUSR, LIBSSH2_SFTP_S_IROTH, \
+					 LIBSSH2_SFTP_S_IXUSR, LIBSSH2_SFTP_S_IXGRP, \
+					 LIBSSH2_SFTP_S_IXOTH
 
 class SFTPUploader():
 	def __init__(self):
@@ -106,59 +108,80 @@ class SFTPUploader():
 		return ScreenCloud.formatFilename(self.nameFormat)
 
 	def upload(self, screenshot, name):
+		"""Uploads the given QImage using SFTP, with the given remote name.
+
+		Returns true for success and false on error.
+		"""
+		try:
+			self.__upload(screenshot, name)
+			return True
+		except Exception as exc:
+			if str(exc):
+				ScreenCloud.setError(str(exc))
+			else:
+				ScreenCloud.setError(str(type(exc)))
+			return False
+
+	def __upload(self, screenshot, name):
 		self.__loadSettings()
-		#Connect to server
-		try:
-			sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-			sock.connect((self.host, self.port))
-			session = Session()
-			session.handshake(sock)
-		except Exception as e:
-			ScreenCloud.setError(e.message)
-			return False
-		if self.authMethod == "Password":
-			try:
-				session.userauth_password(self.username, self.password)
-			except ssh2.exceptions.AuthenticationError:
-				ScreenCloud.setError("Authentication failed (password)")
-				return False
-		else:
-			try:
-				session.userauth_publickey_fromfile(self.username, self.keyfile, passphrase=self.passphrase)
-			except ssh2.exceptions.AuthenticationError:
-				ScreenCloud.setError("Authentication failed (key)")
-				return False
-			except Exception as e:
-				ScreenCloud.setError("Unknown error: " + e.message)
-				return False
-		sftp = session.sftp_init()
-		mode = LIBSSH2_SFTP_S_IRUSR | \
-			LIBSSH2_SFTP_S_IWUSR | \
-			LIBSSH2_SFTP_S_IRGRP | \
-			LIBSSH2_SFTP_S_IROTH
-		f_flags = LIBSSH2_FXF_CREAT | LIBSSH2_FXF_WRITE
-		try:
-			try:
-				sftp.opendir(self.folder)
-			except ssh2.exceptions.SFTPError:
-				sftp.mkdir(self.folder, mode | LIBSSH2_SFTP_S_IXUSR)
+		with self.__openSftpSubsystem() as sftp:
+			mode = LIBSSH2_SFTP_S_IRUSR | \
+				LIBSSH2_SFTP_S_IWUSR | \
+				LIBSSH2_SFTP_S_IRGRP | \
+				LIBSSH2_SFTP_S_IROTH
+			f_flags = LIBSSH2_FXF_CREAT | LIBSSH2_FXF_WRITE
 			(filepath, filename) = os.path.split(ScreenCloud.formatFilename(name))
-			if len(filepath):
-				for folder in filepath.split("/"):
-					try:
-						sftp.mkdir(folder)
-					except IOError:
-						pass
 			destination = self.folder + "/" + ScreenCloud.formatFilename(filename)
-			with sftp.open(destination, f_flags, mode) as remote_fh:
-				remote_fh.write(_serializeQImage(screenshot, ScreenCloud.getScreenshotFormat()))
-		except IOError:
-			ScreenCloud.setError("Failed to write " + self.folder + "/" + ScreenCloud.formatFilename(name) + ". Check permissions.")
-			return False
-		sock.close()
+			try:
+				try:
+					sftp.opendir(self.folder)
+				except SFTPError:
+					sftp.mkdir(self.folder, mode | \
+						   LIBSSH2_SFTP_S_IXUSR | \
+						   LIBSSH2_SFTP_S_IXGRP | \
+						   LIBSSH2_SFTP_S_IXOTH)
+				if len(filepath):
+					for folder in filepath.split("/"):
+						try:
+							sftp.mkdir(folder)
+						except IOError:
+							pass
+				with sftp.open(destination, f_flags, mode) as remote_fh:
+					remote_fh.write(_serializeQImage(screenshot, ScreenCloud.getScreenshotFormat()))
+			except IOError as exc:
+				raise IOError("Failed to write {}. Check permissions.".format(destination)) from exc
+
 		if self.url:
 			ScreenCloud.setUrl(self.url + ScreenCloud.formatFilename(name))
-		return True
+
+	@contextlib.contextmanager
+	def __openSftpSubsystem(self):
+		"""Opens an SFTP subsystem based on settings."""
+		with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+			sock.connect((self.host, self.port))
+			session = Session()
+			try:
+				session.handshake(sock)
+				if self.authMethod == "Password":
+					session.userauth_password(self.username, self.password)
+				else:
+					session.userauth_publickey_fromfile(self.username, self.keyfile, passphrase=self.passphrase)
+
+				sftp = session.sftp_init()
+				try:
+					yield sftp
+				finally:
+					sftp.get_channel().close()
+			except SSH2Error as exc:
+				# ssh2-python doesn't set an exception message and instead stores
+				# it in the session object.
+				msg = session.last_error()
+				if msg:
+					exc.args = (msg.decode("utf-8"),)
+				raise
+			finally:
+				session.disconnect()
+
 
 def _getHomeDirectory():
 	"""Returns the user's home directory."""
