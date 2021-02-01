@@ -1,4 +1,6 @@
-import contextlib, os.path, socket, sys, time
+#!/usr/bin/env python3
+import contextlib, socket, sys, time
+from urllib.parse import urljoin
 
 import ScreenCloud
 
@@ -16,6 +18,9 @@ from ssh2.sftp import LIBSSH2_FXF_CREAT, LIBSSH2_FXF_WRITE, \
 					 LIBSSH2_SFTP_S_IWUSR, LIBSSH2_SFTP_S_IROTH, \
 					 LIBSSH2_SFTP_S_IXUSR, LIBSSH2_SFTP_S_IXGRP, \
 					 LIBSSH2_SFTP_S_IXOTH
+
+_SFTP_S_IRUGO = LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH
+_SFTP_S_IXUGO = LIBSSH2_SFTP_S_IXUSR | LIBSSH2_SFTP_S_IXGRP | LIBSSH2_SFTP_S_IXOTH
 
 class SFTPUploader():
 	def __init__(self):
@@ -110,6 +115,8 @@ class SFTPUploader():
 	def upload(self, screenshot, name):
 		"""Uploads the given QImage using SFTP, with the given remote name.
 
+                The name should already be formatted using getFilename().
+
 		Returns true for success and false on error.
 		"""
 		try:
@@ -125,34 +132,21 @@ class SFTPUploader():
 	def __upload(self, screenshot, name):
 		self.__loadSettings()
 		with self.__openSftpSubsystem() as sftp:
-			mode = LIBSSH2_SFTP_S_IRUSR | \
-				LIBSSH2_SFTP_S_IWUSR | \
-				LIBSSH2_SFTP_S_IRGRP | \
-				LIBSSH2_SFTP_S_IROTH
-			f_flags = LIBSSH2_FXF_CREAT | LIBSSH2_FXF_WRITE
-			(filepath, filename) = os.path.split(ScreenCloud.formatFilename(name))
-			destination = self.folder + "/" + ScreenCloud.formatFilename(filename)
+			mode = _SFTP_S_IRUGO | LIBSSH2_SFTP_S_IWUSR
+			# The trailing slash ensures folder is interpreted
+			# as a directory. urljoin handles double-slash well.
+			destination = urljoin(self.folder + '/', name)
 			try:
-				try:
-					sftp.opendir(self.folder)
-				except SFTPError:
-					sftp.mkdir(self.folder, mode | \
-						   LIBSSH2_SFTP_S_IXUSR | \
-						   LIBSSH2_SFTP_S_IXGRP | \
-						   LIBSSH2_SFTP_S_IXOTH)
-				if len(filepath):
-					for folder in filepath.split("/"):
-						try:
-							sftp.mkdir(folder)
-						except IOError:
-							pass
-				with sftp.open(destination, f_flags, mode) as remote_fh:
+				_makeRemoteDirs(sftp, _dirname(destination), mode | _SFTP_S_IXUGO)
+				with sftp.open(destination, LIBSSH2_FXF_CREAT | LIBSSH2_FXF_WRITE, mode) as remote_fh:
 					remote_fh.write(_serializeQImage(screenshot, ScreenCloud.getScreenshotFormat()))
 			except IOError as exc:
 				raise IOError("Failed to write {}. Check permissions.".format(destination)) from exc
 
 		if self.url:
-			ScreenCloud.setUrl(self.url + ScreenCloud.formatFilename(name))
+			# The trailing slash ensures url is interpreted
+			# as a directory. urljoin handles double-slash well.
+			ScreenCloud.setUrl(urljoin(self.url + '/', name))
 
 	@contextlib.contextmanager
 	def __openSftpSubsystem(self):
@@ -197,3 +191,22 @@ def _serializeQImage(image, format):
 	buffer.open(QIODevice.WriteOnly)
 	image.save(buffer, format)
 	return data.data()
+
+def _makeRemoteDirs(sftp, path, mode):
+        """Ensures a directory exists, creating parents as needed."""
+        try:
+                sftp.stat(path)
+        except SFTPError:
+                parent = _dirname(path)
+                if parent in ("", "/"):
+                        raise
+                _makeRemoteDirs(sftp, parent, mode)
+                sftp.mkdir(path, mode)
+
+def _dirname(path):
+        """Like os.path.dirname(), but always operates on POSIX paths."""
+        if "/" not in path:
+                return ""
+
+        dir = path.rsplit("/", 1)[0]
+        return dir if dir else "/"
