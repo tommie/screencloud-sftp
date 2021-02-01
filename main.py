@@ -2,7 +2,7 @@ import os.path, socket, sys, time
 
 import ScreenCloud
 
-from PythonQt.QtCore import QFile, QSettings
+from PythonQt.QtCore import QBuffer, QByteArray, QFile, QIODevice, QSettings
 from PythonQt.QtGui import QDesktopServices, QFileDialog
 if not hasattr(QDesktopServices, 'storageLocation'):
 	# storageLocation is deprecated in QT5.
@@ -107,13 +107,6 @@ class SFTPUploader():
 
 	def upload(self, screenshot, name):
 		self.__loadSettings()
-		#Save to a temporary file
-		timestamp = time.time()
-		try:
-			tmpFilename = QDesktopServices.storageLocation(QDesktopServices.TempLocation) + "/" + ScreenCloud.formatFilename(str(timestamp))
-		except AttributeError:
-			tmpFilename = QStandardPaths.writableLocation(QStandardPaths.TempLocation) + "/" + ScreenCloud.formatFilename(str(timestamp))
-		screenshot.save(QFile(tmpFilename), ScreenCloud.getScreenshotFormat())
 		#Connect to server
 		try:
 			sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -156,13 +149,9 @@ class SFTPUploader():
 						sftp.mkdir(folder)
 					except IOError:
 						pass
-			source = tmpFilename
 			destination = self.folder + "/" + ScreenCloud.formatFilename(filename)
-			png_build = bytes()
-			with open(source, 'rb') as local_fh, sftp.open(destination, f_flags, mode) as remote_fh:
-				for data in local_fh:
-					png_build += data
-				remote_fh.write(png_build)
+			with sftp.open(destination, f_flags, mode) as remote_fh:
+				remote_fh.write(_serializeQImage(screenshot, ScreenCloud.getScreenshotFormat()))
 		except IOError:
 			ScreenCloud.setError("Failed to write " + self.folder + "/" + ScreenCloud.formatFilename(name) + ". Check permissions.")
 			return False
@@ -177,3 +166,11 @@ def _getHomeDirectory():
 		# QT4
 		return QDesktopServices.storageLocation(QDesktopServices.HomeLocation)
 	return QStandardPaths.writableLocation(QStandardPaths.HomeLocation)
+
+def _serializeQImage(image, format):
+	"""Converts the provided QImage to bytes in the given format."""
+	data = QByteArray()
+	buffer = QBuffer(data)
+	buffer.open(QIODevice.WriteOnly)
+	image.save(buffer, format)
+	return data.data()
