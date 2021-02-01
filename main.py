@@ -1,8 +1,13 @@
+import os.path, socket, sys, time
+
 import ScreenCloud
-from PythonQt.QtCore import QFile, QSettings, QUrl
-from PythonQt.QtGui import QWidget, QDialog, QDesktopServices, QMessageBox, QFileDialog
+
+from PythonQt.QtCore import QFile, QSettings
+from PythonQt.QtGui import QDesktopServices, QFileDialog
+if not hasattr(QDesktopServices, 'storageLocation'):
+	# storageLocation is deprecated in QT5.
+	from PythonQt.QtCore import QStandardPaths
 from PythonQt.QtUiTools import QUiLoader
-import time, sys, os.path, socket
 import ssh2
 from ssh2.session import Session
 from ssh2.sftp import LIBSSH2_FXF_CREAT, LIBSSH2_FXF_WRITE, \
@@ -12,12 +17,6 @@ from ssh2.sftp import LIBSSH2_FXF_CREAT, LIBSSH2_FXF_WRITE, \
 
 class SFTPUploader():
 	def __init__(self):
-		try:
-			tempLocation = QDesktopServices.storageLocation(QDesktopServices.TempLocation)
-		except AttributeError:
-			from PythonQt.QtCore import QStandardPaths #fix for Qt5
-			tempLocation = QStandardPaths.writableLocation(QStandardPaths.TempLocation)
-
 		self.uil = QUiLoader()
 		self.loadSettings()
 
@@ -101,7 +100,6 @@ class SFTPUploader():
 		try:
 			tmpFilename = QDesktopServices.storageLocation(QDesktopServices.TempLocation) + "/" + ScreenCloud.formatFilename(str(timestamp))
 		except AttributeError:
-			from PythonQt.QtCore import QStandardPaths #fix for Qt5
 			tmpFilename = QStandardPaths.writableLocation(QStandardPaths.TempLocation) + "/" + ScreenCloud.formatFilename(str(timestamp))
 		screenshot.save(QFile(tmpFilename), ScreenCloud.getScreenshotFormat())
 		#Connect to server
@@ -166,9 +164,16 @@ class SFTPUploader():
 		self.updateUi()
 
 	def browseForKeyfile(self):
-		filename = QFileDialog.getOpenFileName(self.settingsDialog, "Select Keyfile...", QDesktopServices.storageLocation(QDesktopServices.HomeLocation), "*")
+		filename = QFileDialog.getOpenFileName(self.settingsDialog, "Select Keyfile...", _getHomeDirectory(), "*")
 		if filename:
 			self.settingsDialog.group_server.input_keyfile.setText(filename)
 
 	def nameFormatEdited(self, nameFormat):
 		self.settingsDialog.group_location.label_example.setText(ScreenCloud.formatFilename(nameFormat))
+
+def _getHomeDirectory():
+	"""Returns the user's home directory."""
+	if hasattr(QDesktopServices, 'storageLocation'):
+		# QT4
+		return QDesktopServices.storageLocation(QDesktopServices.HomeLocation)
+	return QStandardPaths.writableLocation(QStandardPaths.HomeLocation)
