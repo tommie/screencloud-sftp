@@ -18,17 +18,17 @@ from ssh2.sftp import LIBSSH2_FXF_CREAT, LIBSSH2_FXF_WRITE, \
 class SFTPUploader():
 	def __init__(self):
 		self.uil = QUiLoader()
-		self.loadSettings()
+		self.__loadSettings()
 
 	def showSettingsUI(self, parentWidget):
 		self.parentWidget = parentWidget
 		self.settingsDialog = self.uil.load(QFile(workingDir + "/settings.ui"), parentWidget)
-		self.settingsDialog.group_server.combo_auth.connect("currentIndexChanged(QString)", self.authMethodChanged)
-		self.settingsDialog.group_server.button_browse.connect("clicked()", self.browseForKeyfile)
-		self.settingsDialog.group_location.input_name.connect("textChanged(QString)", self.nameFormatEdited)
-		self.settingsDialog.connect("accepted()", self.saveSettings)
-		self.loadSettings()
-		self.updateUi()
+		self.settingsDialog.group_server.combo_auth.connect("currentIndexChanged(QString)", self.__authMethodChanged)
+		self.settingsDialog.group_server.button_browse.connect("clicked()", self.__browseForKeyfile)
+		self.settingsDialog.group_location.input_name.connect("textChanged(QString)", self.__nameFormatEdited)
+		self.settingsDialog.connect("accepted()", self.__saveSettings)
+		self.__loadSettings()
+		self.__updateUi()
 		self.settingsDialog.group_server.input_host.text = self.host
 		self.settingsDialog.group_server.input_port.value = self.port
 		self.settingsDialog.group_server.input_username.text = self.username
@@ -41,7 +41,7 @@ class SFTPUploader():
 		self.settingsDialog.group_server.combo_auth.setCurrentIndex(self.settingsDialog.group_server.combo_auth.findText(self.authMethod))
 		self.settingsDialog.open()
 
-	def loadSettings(self):
+	def __loadSettings(self):
 		settings = QSettings()
 		settings.beginGroup("uploaders")
 		settings.beginGroup("sftp")
@@ -58,7 +58,7 @@ class SFTPUploader():
 		settings.endGroup()
 		settings.endGroup()
 
-	def saveSettings(self):
+	def __saveSettings(self):
 		settings = QSettings()
 		settings.beginGroup("uploaders")
 		settings.beginGroup("sftp")
@@ -75,7 +75,7 @@ class SFTPUploader():
 		settings.endGroup()
 		settings.endGroup()
 
-	def updateUi(self):
+	def __updateUi(self):
 		self.settingsDialog.group_server.label_password.setVisible(self.authMethod == "Password")
 		self.settingsDialog.group_server.input_password.setVisible(self.authMethod == "Password")
 		self.settingsDialog.group_server.label_keyfile.setVisible(self.authMethod == "Key")
@@ -85,16 +85,28 @@ class SFTPUploader():
 		self.settingsDialog.group_server.input_passphrase.setVisible(self.authMethod == "Key")
 		self.settingsDialog.adjustSize()
 
+	def __authMethodChanged(self, method):
+		self.authMethod = method
+		self.__updateUi()
+
+	def __browseForKeyfile(self):
+		filename = QFileDialog.getOpenFileName(self.settingsDialog, "Select Keyfile...", _getHomeDirectory(), "*")
+		if filename:
+			self.settingsDialog.group_server.input_keyfile.setText(filename)
+
+	def __nameFormatEdited(self, nameFormat):
+		self.settingsDialog.group_location.label_example.setText(ScreenCloud.formatFilename(nameFormat))
+
 	def isConfigured(self):
-		self.loadSettings()
+		self.__loadSettings()
 		return not(not self.host or not self.username or not (self.password or self.keyfile) or not self.folder)
 
 	def getFilename(self):
-		self.loadSettings()
+		self.__loadSettings()
 		return ScreenCloud.formatFilename(self.nameFormat)
 
 	def upload(self, screenshot, name):
-		self.loadSettings()
+		self.__loadSettings()
 		#Save to a temporary file
 		timestamp = time.time()
 		try:
@@ -158,18 +170,6 @@ class SFTPUploader():
 		if self.url:
 			ScreenCloud.setUrl(self.url + ScreenCloud.formatFilename(name))
 		return True
-
-	def authMethodChanged(self, method):
-		self.authMethod = method
-		self.updateUi()
-
-	def browseForKeyfile(self):
-		filename = QFileDialog.getOpenFileName(self.settingsDialog, "Select Keyfile...", _getHomeDirectory(), "*")
-		if filename:
-			self.settingsDialog.group_server.input_keyfile.setText(filename)
-
-	def nameFormatEdited(self, nameFormat):
-		self.settingsDialog.group_location.label_example.setText(ScreenCloud.formatFilename(nameFormat))
 
 def _getHomeDirectory():
 	"""Returns the user's home directory."""
