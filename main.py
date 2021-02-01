@@ -5,13 +5,13 @@ from urllib.parse import urljoin
 import ScreenCloud
 
 from PythonQt.QtCore import QBuffer, QByteArray, QFile, QIODevice, QSettings
-from PythonQt.QtGui import QDesktopServices, QFileDialog
+from PythonQt.QtGui import QDesktopServices, QFileDialog, QInputDialog, QLineEdit
 if not hasattr(QDesktopServices, 'storageLocation'):
 	# storageLocation is deprecated in QT5.
 	from PythonQt.QtCore import QStandardPaths
 from PythonQt.QtUiTools import QUiLoader
 import ssh2
-from ssh2.exceptions import SFTPError, SSH2Error
+from ssh2.exceptions import FileError, SFTPError, SSH2Error
 from ssh2.session import Session
 from ssh2.sftp import LIBSSH2_FXF_CREAT, LIBSSH2_FXF_WRITE, \
 					 LIBSSH2_SFTP_S_IRUSR, LIBSSH2_SFTP_S_IRGRP, \
@@ -22,10 +22,15 @@ from ssh2.sftp import LIBSSH2_FXF_CREAT, LIBSSH2_FXF_WRITE, \
 _SFTP_S_IRUGO = LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH
 _SFTP_S_IXUGO = LIBSSH2_SFTP_S_IXUSR | LIBSSH2_SFTP_S_IXGRP | LIBSSH2_SFTP_S_IXOTH
 
+class _NeedsPassphraseException(Exception):
+        """Exception raised to indicate that authentication should be retried with a key passphrase."""
+        pass
+
 class SFTPUploader():
 	def __init__(self):
 		self.uil = QUiLoader()
 		self.__loadSettings()
+		self.settingsDialog = None
 
 	def showSettingsUI(self, parentWidget):
 		self.parentWidget = parentWidget
@@ -151,15 +156,25 @@ class SFTPUploader():
 	@contextlib.contextmanager
 	def __openSftpSubsystem(self):
 		"""Opens an SFTP subsystem based on settings."""
+		try:
+                        with self.__openSftpSubsystemWithPassphrase(self.passphrase) as sftp:
+                                yield sftp
+		except _NeedsPassphraseException as exc:
+                        # Try again with a passphrase.
+                        passphrase = QInputDialog.getText(self.settingsDialog, "Private Key Passphrase", "Unlock the private key:", QLineEdit.Password)
+                        if not passphrase:
+                                raise exc.__cause__
+                        with self.__openSftpSubsystemWithPassphrase(passphrase) as sftp:
+                                yield sftp
+
+	@contextlib.contextmanager
+	def __openSftpSubsystemWithPassphrase(self, passphrase):
 		with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 			sock.connect((self.host, self.port))
 			session = Session()
 			try:
 				session.handshake(sock)
-				if self.authMethod == "Password":
-					session.userauth_password(self.username, self.password)
-				else:
-					session.userauth_publickey_fromfile(self.username, self.keyfile, passphrase=self.passphrase)
+				self.__authenticate(session, passphrase)
 
 				sftp = session.sftp_init()
 				try:
@@ -176,6 +191,20 @@ class SFTPUploader():
 			finally:
 				session.disconnect()
 
+	def __authenticate(self, session, passphrase):
+		"""Runs authentication on a Session based on settings."""
+		try:
+			if self.authMethod == "Password":
+				session.userauth_password(self.username, self.password)
+			else:
+				session.userauth_publickey_fromfile(self.username, self.keyfile, passphrase=passphrase)
+		except FileError as exc:
+			if not passphrase:
+				# ssh2-python crashes if we attempt to call
+				# userauth_publickey_fromfile twice on a session,
+				# so we need the caller to retry the entire session.
+				raise _NeedsPassphraseException() from exc
+			raise
 
 def _getHomeDirectory():
 	"""Returns the user's home directory."""
